@@ -1,0 +1,8 @@
+2025-08-07 21:16:29,929 | test_logger | [37mINFO[0m | _log:172 | Starting decorated_function
+2025-08-07 21:16:29,929 | test_logger | [37mINFO[0m | _log:172 | ✅ SUCCESS: Completed decorated_function
+2025-08-07 21:16:29,929 | test_logger | [37mINFO[0m | _log:172 | Starting decorated_function
+2025-08-07 21:16:29,929 | test_logger | [31mERROR[0m | _log:172 | Failed decorated_function: Test error
+2025-08-07 21:17:06,717 | test_logger | [37mINFO[0m | _log:172 | Starting decorated_function
+2025-08-07 21:17:06,718 | test_logger | [37mINFO[0m | _log:172 | ✅ SUCCESS: Completed decorated_function
+2025-08-07 21:17:06,718 | test_logger | [37mINFO[0m | _log:172 | Starting decorated_function
+2025-08-07 21:17:06,718 | test_logger | [31mERROR[0m | _log:172 | Failed decorated_function: Test error

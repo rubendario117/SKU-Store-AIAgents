@@ -276,10 +276,13 @@ class OperationTimer:
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.success = exc_type is None
+        end_metadata = self.metadata.copy()
+        if exc_val:
+            end_metadata['error'] = str(exc_val)
         performance_monitor.end_operation(
             self.operation_id, 
             self.success,
-            {'error': str(exc_val) if exc_val else None}
+            end_metadata
         )
     
     def set_metadata(self, key: str, value: Any):

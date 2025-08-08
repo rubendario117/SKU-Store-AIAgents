@@ -1,0 +1,6 @@
+2025-08-07 21:16:29,929 | test_logger | [31mERROR[0m | _log:172 | Failed decorated_function: Test error
+Exception: None
+--------------------------------------------------------------------------------
+2025-08-07 21:17:06,718 | test_logger | [31mERROR[0m | _log:172 | Failed decorated_function: Test error
+Exception: None
+--------------------------------------------------------------------------------
