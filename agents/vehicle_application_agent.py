@@ -12,6 +12,9 @@ from typing import List, Dict, Optional, Any
 # Import settings from the central config file
 from config import PART_NUMBER_COLUMN_SOURCE, BRAND_COLUMN_SOURCE
 
+# Import monitoring system
+from monitoring import OperationTimer, get_vehicle_logger, LogContext
+
 class VehicleApplication:
     """Standardized vehicle application data structure"""
     def __init__(self, year_start: int = None, year_end: int = None, make: str = None, 
@@ -490,6 +493,9 @@ class VehicleApplicationAgent:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
+        
+        # Initialize monitoring
+        self.logger = get_vehicle_logger()
         
         # Initialize parsers in priority order
         self.parsers = [

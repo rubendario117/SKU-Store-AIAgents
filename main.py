@@ -14,6 +14,12 @@ from agents.image_agent import ImageSourcingAgent
 from agents.bigcommerce_agent import BigCommerceUploaderAgent
 from agents.vehicle_application_agent import VehicleApplicationAgent
 
+# Import monitoring and logging
+from monitoring import (
+    performance_monitor, OperationTimer, 
+    get_main_logger, LogContext
+)
+
 # Imports for text generation
 from google.cloud import translate_v2 as translate
 import google.generativeai as genai
@@ -123,97 +129,135 @@ def merge_applications(official_apps, excel_apps):
 def process_single_product(product_data, agents):
     """Encapsulates the entire pipeline for a single product."""
     sku = product_data.get(config.PART_NUMBER_COLUMN_SOURCE, "UNKNOWN_SKU")
-    print(f"--- Starting to process SKU: {sku} ---")
+    logger = get_main_logger()
     
-    log_entry = {
-        "source_sku": sku, 
-        "source_row": product_data.get('original_excel_row', 'N/A'),
-        "status": "Started", "bc_product_id": None, "images_sourced_paths": [],
-        "images_uploaded_count": 0, "product_name_es": "", "description_source": "", 
-        "notes": []
-    }
+    with LogContext(logger, sku=sku, row=product_data.get('original_excel_row', 'N/A')):
+        logger.info(f"Starting to process SKU: {sku}")
+        
+        log_entry = {
+            "source_sku": sku, 
+            "source_row": product_data.get('original_excel_row', 'N/A'),
+            "status": "Started", "bc_product_id": None, "images_sourced_paths": [],
+            "images_uploaded_count": 0, "product_name_es": "", "description_source": "", 
+            "notes": []
+        }
     
-    try:
-        # Pipeline 1: Image Sourcing
-        img_paths = agents['image'].find_product_images(product_data, max_images_per_product=1)
-        product_data['processed_image_paths'] = img_paths
-        log_entry['images_sourced_paths'] = img_paths
-        if not img_paths: log_entry['notes'].append("No images sourced.")
+        try:
+            # Pipeline 1: Image Sourcing
+            with OperationTimer('main', 'image_sourcing', {'sku': sku}):
+                logger.info("Starting image sourcing pipeline")
+                img_paths = agents['image'].find_product_images(product_data, max_images_per_product=1)
+                product_data['processed_image_paths'] = img_paths
+                log_entry['images_sourced_paths'] = img_paths
+                if not img_paths: 
+                    log_entry['notes'].append("No images sourced.")
+                    logger.warning("No images sourced for product")
+                else:
+                    logger.success(f"Sourced {len(img_paths)} images")
 
-        # Pipeline 2: Spanish Product Name
-        name_es = translate_text(product_data.get(config.DESCRIPTION_COLUMN_EN_SOURCE, ""), agents['translate'])
-        product_data['Name_ES_for_BC'] = name_es
-        log_entry['product_name_es'] = name_es
+            # Pipeline 2: Spanish Product Name
+            with OperationTimer('main', 'translation', {'sku': sku}):
+                logger.info("Starting product name translation")
+                name_es = translate_text(product_data.get(config.DESCRIPTION_COLUMN_EN_SOURCE, ""), agents['translate'])
+                product_data['Name_ES_for_BC'] = name_es
+                log_entry['product_name_es'] = name_es
+                if name_es and not name_es.startswith('SPANISH_NAME_ERROR'):
+                    logger.success("Product name translated successfully")
+                else:
+                    logger.warning("Product name translation failed or had issues")
 
-        # Pipeline 3: Vehicle Applications Extraction (NEW)
-        official_applications = []
-        if 'vehicle_app' in agents:
-            try:
-                print(f"    Extracting official vehicle applications...")
-                official_applications = agents['vehicle_app'].find_and_extract_applications(
-                    product_data, agents.get('image')
-                )
-                log_entry['official_applications_found'] = len(official_applications)
-            except Exception as e:
-                print(f"    Warning: Vehicle application extraction failed: {e}")
-                log_entry['official_applications_found'] = 0
+            # Pipeline 3: Vehicle Applications Extraction (NEW)
+            official_applications = []
+            if 'vehicle_app' in agents:
+                with OperationTimer('main', 'vehicle_applications', {'sku': sku}):
+                    try:
+                        logger.info("Starting vehicle applications extraction")
+                        official_applications = agents['vehicle_app'].find_and_extract_applications(
+                            product_data, agents.get('image')
+                        )
+                        log_entry['official_applications_found'] = len(official_applications)
+                        if official_applications:
+                            logger.success(f"Found {len(official_applications)} official vehicle applications")
+                        else:
+                            logger.info("No official vehicle applications found")
+                    except Exception as e:
+                        logger.error(f"Vehicle application extraction failed: {e}")
+                        log_entry['official_applications_found'] = 0
 
-        # Pipeline 4: Enhanced Spanish Product Description
-        if sku in agents['existing_descs'] and agents['existing_descs'][sku].strip():
-            full_desc_es = agents['existing_descs'][sku]
-            log_entry['description_source'] = "ClientExport"
-        else:
-            gemini_paragraph = generate_description(product_data, agents['gemini'], official_applications)
-            
-            # Merge official and Excel applications
-            excel_apps = []
-            app_string = product_data.get(config.APPLICATION_COLUMN_SOURCE, "").strip()
-            if app_string:
-                excel_apps = [a.strip() for a in app_string.replace(';', '\n').splitlines() if a.strip()]
-            
-            merged_apps = merge_applications(official_applications, excel_apps)
-            
-            # Generate HTML for applications
-            app_html = ""
-            if merged_apps:
-                app_html = "<p><strong>Aplicaciones:</strong></p><ul>" + "".join(f"<li>{item}</li>" for item in merged_apps) + "</ul>"
-            
-            full_desc_es = f"<p>{gemini_paragraph}</p>{app_html}"
-            
-            if official_applications:
-                log_entry['description_source'] = "GeminiGenerated_Plus_OfficialApps_Plus_ExcelApps"
-            else:
-                log_entry['description_source'] = "GeminiGenerated_Plus_ExcelApps"
-                
-        product_data['Final_Full_Description_ES_for_BC'] = full_desc_es
+            # Pipeline 4: Enhanced Spanish Product Description
+            with OperationTimer('main', 'description_generation', {'sku': sku}):
+                logger.info("Starting product description generation")
+                if sku in agents['existing_descs'] and agents['existing_descs'][sku].strip():
+                    full_desc_es = agents['existing_descs'][sku]
+                    log_entry['description_source'] = "ClientExport"
+                    logger.info("Using existing description from client export")
+                else:
+                    gemini_paragraph = generate_description(product_data, agents['gemini'], official_applications)
+                    
+                    # Merge official and Excel applications
+                    excel_apps = []
+                    app_string = product_data.get(config.APPLICATION_COLUMN_SOURCE, "").strip()
+                    if app_string:
+                        excel_apps = [a.strip() for a in app_string.replace(';', '\n').splitlines() if a.strip()]
+                    
+                    merged_apps = merge_applications(official_applications, excel_apps)
+                    
+                    # Generate HTML for applications
+                    app_html = ""
+                    if merged_apps:
+                        app_html = "<p><strong>Aplicaciones:</strong></p><ul>" + "".join(f"<li>{item}</li>" for item in merged_apps) + "</ul>"
+                    
+                    full_desc_es = f"<p>{gemini_paragraph}</p>{app_html}"
+                    
+                    if official_applications:
+                        log_entry['description_source'] = "GeminiGenerated_Plus_OfficialApps_Plus_ExcelApps"
+                    else:
+                        log_entry['description_source'] = "GeminiGenerated_Plus_ExcelApps"
+                    
+                    logger.success(f"Generated description with {len(merged_apps)} applications")
+                    
+            product_data['Final_Full_Description_ES_for_BC'] = full_desc_es
 
-        # Pipeline 5: BigCommerce Upload
-        created_prod = agents['bigcommerce'].create_product(product_data, agents['existing_skus'])
-        if created_prod and created_prod.get('id'):
-            bc_id = created_prod['id']
-            log_entry['bc_product_id'] = bc_id
-            log_entry['status'] = "Product Created"
-            if img_paths:
-                uploaded_count = 0
-                for i, path in enumerate(img_paths):
-                    if agents['bigcommerce'].upload_product_image(bc_id, path, is_thumbnail=(i==0), image_alt_text=name_es):
-                        uploaded_count += 1
-                log_entry['images_uploaded_count'] = uploaded_count
-                if uploaded_count > 0: log_entry['status'] += " + Images Uploaded"
-        else:
-            log_entry['status'] = "Failed - Product Creation"
+            # Pipeline 5: BigCommerce Upload
+            with OperationTimer('main', 'bigcommerce_upload', {'sku': sku}):
+                logger.info("Starting BigCommerce product creation")
+                created_prod = agents['bigcommerce'].create_product(product_data, agents['existing_skus'])
+                if created_prod and created_prod.get('id'):
+                    bc_id = created_prod['id']
+                    log_entry['bc_product_id'] = bc_id
+                    log_entry['status'] = "Product Created"
+                    logger.success(f"Product created with ID: {bc_id}")
+                    
+                    if img_paths:
+                        logger.info(f"Starting image upload for {len(img_paths)} images")
+                        uploaded_count = 0
+                        for i, path in enumerate(img_paths):
+                            if agents['bigcommerce'].upload_product_image(bc_id, path, is_thumbnail=(i==0), image_alt_text=name_es):
+                                uploaded_count += 1
+                        log_entry['images_uploaded_count'] = uploaded_count
+                        if uploaded_count > 0: 
+                            log_entry['status'] += " + Images Uploaded"
+                            logger.success(f"Uploaded {uploaded_count} images")
+                        else:
+                            logger.warning("No images were uploaded successfully")
+                else:
+                    log_entry['status'] = "Failed - Product Creation"
+                    logger.error("Failed to create product in BigCommerce")
 
-    except Exception as e:
-        log_entry['status'] = "Failed - Pipeline Error"
-        log_entry['notes'].append(f"Pipeline exception: {str(e)}")
-    
-    print(f"--- Finished processing SKU: {sku} with Status: {log_entry['status']} ---")
-    return log_entry
+        except Exception as e:
+            log_entry['status'] = "Failed - Pipeline Error"
+            log_entry['notes'].append(f"Pipeline exception: {str(e)}")
+            logger.error(f"Pipeline failed with exception: {e}", error_type=type(e).__name__)
+        
+        logger.info(f"Finished processing SKU: {sku} with Status: {log_entry['status']}")
+        return log_entry
 
 
 def main():
     """Main function to orchestrate the batch processing."""
-    print("--- Initializing Batch Upload to BigCommerce ---")
+    logger = get_main_logger()
+    logger.info("Initializing Batch Upload to BigCommerce")
+    
     load_dotenv()
 
     # --- Load Credentials ---
@@ -249,25 +293,25 @@ def main():
             'existing_skus': set(),
             'existing_descs': {}
         }
-        print("All API clients and agents initialized.")
+        logger.success("All API clients and agents initialized")
     except Exception as e:
-        print(f"CRITICAL ERROR during initialization: {e}")
+        logger.critical(f"CRITICAL ERROR during initialization: {e}")
         return
 
     # --- Load Data for Processing ---
     try:
         df_skus = pd.read_csv(config.EXISTING_STORE_SKUS_CSV_PATH)
         agents['existing_skus'] = set(df_skus[config.SKU_COLUMN_STORE_EXPORT].dropna().astype(str))
-        print(f"Loaded {len(agents['existing_skus'])} existing SKUs.")
+        logger.info(f"Loaded {len(agents['existing_skus'])} existing SKUs")
 
         df_descs = pd.read_csv(config.EXISTING_DESCRIPTIONS_CSV_PATH)
         agents['existing_descs'] = pd.Series(
             df_descs[config.HTML_DESCRIPTION_COLUMN_EXISTING_DESC_EXPORT].values,
             index=df_descs[config.SKU_COLUMN_EXISTING_DESC_EXPORT].astype(str)
         ).to_dict()
-        print(f"Loaded {len(agents['existing_descs'])} existing descriptions.")
+        logger.info(f"Loaded {len(agents['existing_descs'])} existing descriptions")
     except Exception as e:
-        print(f"Warning: Could not load data files: {e}")
+        logger.warning(f"Could not load data files: {e}")
 
     all_source_products = load_source_products(config.SOURCE_PRODUCTS_FILE_PATH)
     if not all_source_products: return
@@ -277,34 +321,43 @@ def main():
         if p.get(config.PART_NUMBER_COLUMN_SOURCE) and 
            p.get(config.PART_NUMBER_COLUMN_SOURCE) not in agents['existing_skus']
     ]
-    print(f"Found {len(new_products)} NEW products to process.")
+    logger.info(f"Found {len(new_products)} NEW products to process")
 
     batch_to_process = new_products[:config.MAX_PRODUCTS_TO_PROCESS_IN_BATCH]
     if not batch_to_process:
-        print("No new products to process in this batch.")
+        logger.info("No new products to process in this batch")
         return
 
     # --- Run Concurrent Processing ---
-    print(f"\n--- Starting CONCURRENT Batch Processing for {len(batch_to_process)} products ---")
+    logger.business(f"Starting CONCURRENT Batch Processing for {len(batch_to_process)} products")
     batch_log = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=config.MAX_CONCURRENT_WORKERS) as executor:
-        future_to_product = {executor.submit(process_single_product, p, agents): p for p in batch_to_process}
-        for future in concurrent.futures.as_completed(future_to_product):
-            batch_log.append(future.result())
+    
+    with OperationTimer('main', 'batch_processing', {'batch_size': len(batch_to_process)}):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=config.MAX_CONCURRENT_WORKERS) as executor:
+            future_to_product = {executor.submit(process_single_product, p, agents): p for p in batch_to_process}
+            for future in concurrent.futures.as_completed(future_to_product):
+                batch_log.append(future.result())
 
     # --- Save Logs ---
-    print("\n--- BATCH PROCESSING COMPLETE ---")
+    logger.business("BATCH PROCESSING COMPLETE")
+    
+    # Calculate success metrics
+    successful_products = sum(1 for entry in batch_log if 'Failed' not in entry.get('status', ''))
+    success_rate = (successful_products / len(batch_log)) * 100 if batch_log else 0
+    
+    logger.performance(f"Batch completed with {successful_products}/{len(batch_log)} successful products ({success_rate:.1f}% success rate)")
+    
     log_filename = f"batch_upload_log_{time.strftime('%Y%m%d_%H%M%S')}"
     
     with open(f"{log_filename}.json", 'w', encoding='utf-8') as f:
         json.dump(batch_log, f, ensure_ascii=False, indent=4)
-    print(f"Full batch log saved to {log_filename}.json")
+    logger.info(f"Full batch log saved to {log_filename}.json")
 
     try:
         pd.DataFrame(batch_log).to_excel(f"{log_filename}.xlsx", index=False, engine='openpyxl')
-        print(f"Batch log also saved to {log_filename}.xlsx")
+        logger.info(f"Batch log also saved to {log_filename}.xlsx")
     except Exception as e:
-        print(f"Error saving log to Excel: {e}")
+        logger.error(f"Error saving log to Excel: {e}")
 
 if __name__ == "__main__":
     main()

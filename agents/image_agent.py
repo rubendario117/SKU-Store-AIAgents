@@ -18,6 +18,9 @@ from config import (
     PART_NUMBER_COLUMN_SOURCE, BRAND_COLUMN_SOURCE, DESCRIPTION_COLUMN_EN_SOURCE
 )
 
+# Import monitoring system
+from monitoring import OperationTimer, get_image_logger, LogContext
+
 class ImageSourcingAgent:
     def __init__(self, serpapi_key):
         self.serpapi_key = serpapi_key
@@ -635,14 +638,17 @@ class ImageSourcingAgent:
         brand = product_info.get(BRAND_COLUMN_SOURCE, '').strip()
         name_en = product_info.get(DESCRIPTION_COLUMN_EN_SOURCE, '')
         
-        print(f"  IMAGE AGENT: Sourcing images for Part#: {part_num} (Brand: {brand})")
-        
-        all_found_paths = []
-        processed_urls = set()
-        
-        # PHASE 1: Official Brand Website Search (Highest Priority)
-        if brand and len(all_found_paths) < max_images_per_product:
-            print(f"    PHASE 1: Searching official {brand} websites...")
+        with LogContext(self.logger, part_number=part_num, brand=brand):
+            self.logger.info(f"Sourcing images for Part#: {part_num} (Brand: {brand})")
+            
+            with OperationTimer('image_agent', 'image_search', {'part_number': part_num, 'brand': brand}):
+                
+                all_found_paths = []
+                processed_urls = set()
+                
+                # PHASE 1: Official Brand Website Search (Highest Priority)
+                if brand and len(all_found_paths) < max_images_per_product:
+                    self.logger.info(f"PHASE 1: Searching official {brand} websites")
             
             brand_upper = brand.upper().strip()
             official_queries = []

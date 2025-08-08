@@ -13,11 +13,17 @@ from config import (
     PRICE_COLUMN_SOURCE, QTY_COLUMN_SOURCE, FIXED_WEIGHT_VALUE
 )
 
+# Import monitoring system
+from monitoring import OperationTimer, get_bigcommerce_logger, LogContext
+
 class BigCommerceUploaderAgent:
     def __init__(self, store_hash, access_token, client_id=None):
         self.store_hash = store_hash; self.access_token = access_token; self.client_id = client_id
         self.base_v3_url = f"https://api.bigcommerce.com/stores/{self.store_hash}/v3"
         self.standard_headers = {"X-Auth-Token":self.access_token,"Accept":"application/json","Content-Type":"application/json"}
+        
+        # Initialize monitoring
+        self.logger = get_bigcommerce_logger()
         
         self.cache_file_path = "bc_api_cache.json"
         self.cache_max_age_seconds = 24 * 60 * 60 # 24 hours
