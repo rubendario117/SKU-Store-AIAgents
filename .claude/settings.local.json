@@ -6,7 +6,9 @@
       "Bash(git add:*)",
       "Bash(python -m pytest test_monitoring_system.py -v)",
       "Bash(python -m pytest test_monitoring_system.py::TestPerformanceMonitor::test_operation_timer_success -v)",
-      "Bash(python -m pytest test_vehicle_parsing_fix.py test_enhanced_image_validation.py -v)"
+      "Bash(python -m pytest test_vehicle_parsing_fix.py test_enhanced_image_validation.py -v)",
+      "Bash(find:*)",
+      "Bash(python -m pytest test_vendor_agnostic_parsing.py -v)"
     ],
     "deny": []
   }
