@@ -1,0 +1,64 @@
+# Environment variables
+.env
+
+# API Keys and Credentials
+secure_keys/
+*.json
+!package*.json
+
+# Cache files
+*.cache
+*_cache.json
+bc_api_cache.json
+vehicle_applications_cache.json
+enhanced_vehicle_applications_cache.json
+
+# Log files
+logs/
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+
+# Data files (potentially sensitive)
+data/
+product_images_batch_final/
+batch_upload_log_*.json
+batch_upload_log_*.xlsx
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Exports
+exports/
