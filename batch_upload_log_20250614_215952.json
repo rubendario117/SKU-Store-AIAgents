@@ -1,0 +1,15 @@
+[
+    {
+        "source_sku": "AAMC37T-IC-STGII",
+        "source_row": 3,
+        "status": "Failed - Product Creation",
+        "bc_product_id": null,
+        "images_sourced_paths": [
+            "product_images_batch_final/AAMC37T-IC-STGII/image_3.jpg"
+        ],
+        "images_uploaded_count": 0,
+        "product_name_es": "Intercooler AAM Competition 370Z STG II",
+        "description_source": "GeminiGenerated_Plus_ExcelApps",
+        "notes": []
+    }
+]

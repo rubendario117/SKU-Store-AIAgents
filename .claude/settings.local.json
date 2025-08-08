@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.hawkperformance.com)",
+      "WebFetch(domain:bilsteincanada.com)",
+      "Bash(git add:*)"
+    ],
+    "deny": []
+  }
+}

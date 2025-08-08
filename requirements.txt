@@ -1,0 +1,11 @@
+# File: requirements.txt
+
+pandas
+openpyxl
+requests
+python-dotenv
+google-cloud-translate
+google-generativeai
+Pillow
+beautifulsoup4
+serpapi
