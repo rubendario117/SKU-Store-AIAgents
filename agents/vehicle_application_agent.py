@@ -521,7 +521,12 @@ class VehicleApplicationAgent:
             print(f"Warning: Could not save vehicle applications cache: {e}")
     
     def extract_applications_from_url(self, url: str, part_number: str, brand: str) -> List[VehicleApplication]:
-        """Extract vehicle applications from a specific URL"""
+        """Extract vehicle applications from a specific URL with enhanced error handling"""
+        
+        # Input validation
+        if not url or not part_number or not brand:
+            print(f"    Error: Missing required parameters (url={bool(url)}, part_number={bool(part_number)}, brand={bool(brand)})")
+            return []
         
         # Check cache first
         cache_key = f"{url}:{part_number}"
@@ -530,81 +535,314 @@ class VehicleApplicationAgent:
             # Check if cache is recent (less than 7 days old)
             if time.time() - cached_data['timestamp'] < 7 * 24 * 3600:
                 print(f"    Using cached applications for {part_number}")
-                return [VehicleApplication(**app) for app in cached_data['applications']]
+                try:
+                    return [VehicleApplication(**app) for app in cached_data['applications']]
+                except Exception as e:
+                    print(f"    Error loading cached data: {e}. Will re-fetch.")
+                    # Remove corrupted cache entry
+                    del self.cache[cache_key]
         
         applications = []
+        max_retries = 3
+        retry_count = 0
         
-        try:
-            print(f"    Fetching vehicle applications from: {url}")
-            resp = self.session.get(url, timeout=30)
-            resp.raise_for_status()
-            
-            soup = BeautifulSoup(resp.content, 'html.parser')
-            
-            # Try each parser in order
-            for parser in self.parsers:
-                if parser.can_parse(url, brand):
-                    print(f"    Using {parser.__class__.__name__}")
-                    applications = parser.extract_applications(url, part_number, soup)
+        while retry_count < max_retries:
+            try:
+                print(f"    Fetching vehicle applications from: {url} (attempt {retry_count + 1}/{max_retries})")
+                
+                # Enhanced request with better error handling
+                resp = self.session.get(
+                    url, 
+                    timeout=30,
+                    allow_redirects=True,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive'
+                    }
+                )
+                resp.raise_for_status()
+                
+                # Validate response content
+                if len(resp.content) < 100:
+                    raise ValueError(f"Response too short ({len(resp.content)} bytes)")
+                
+                # Check for common error pages
+                content_lower = resp.text.lower()
+                if any(error_indicator in content_lower for error_indicator in [
+                    'page not found', '404 error', 'access denied', 'not available',
+                    'temporarily unavailable', 'maintenance mode'
+                ]):
+                    raise ValueError("Page appears to be unavailable or in error state")
+                
+                soup = BeautifulSoup(resp.content, 'html.parser')
+                
+                # Validate parsed content
+                if not soup or not soup.find():
+                    raise ValueError("Failed to parse HTML content")
+                
+                # Try each parser in order with individual error handling
+                parser_errors = []
+                for parser in self.parsers:
+                    if parser.can_parse(url, brand):
+                        try:
+                            print(f"    Using {parser.__class__.__name__}")
+                            applications = parser.extract_applications(url, part_number, soup)
+                            if applications:
+                                print(f"    Successfully extracted {len(applications)} applications with {parser.__class__.__name__}")
+                                break
+                            else:
+                                print(f"    {parser.__class__.__name__} found no applications")
+                        except Exception as parser_error:
+                            error_msg = f"{parser.__class__.__name__} failed: {parser_error}"
+                            parser_errors.append(error_msg)
+                            print(f"    {error_msg}")
+                            continue
+                
+                # If we got applications, validate them
+                if applications:
+                    validated_applications = []
+                    for app in applications:
+                        if self._validate_application(app):
+                            validated_applications.append(app)
+                        else:
+                            print(f"    Skipping invalid application: {app.to_display_string()}")
+                    
+                    applications = validated_applications
+                    
                     if applications:
-                        break
-            
-            # Cache results
-            if applications:
+                        # Cache successful results
+                        try:
+                            self.cache[cache_key] = {
+                                'timestamp': time.time(),
+                                'applications': [app.to_dict() for app in applications],
+                                'url': url,
+                                'part_number': part_number,
+                                'brand': brand,
+                                'parser_used': next((p.__class__.__name__ for p in self.parsers 
+                                                   if p.can_parse(url, brand) and applications), 'Unknown')
+                            }
+                            self._save_cache()
+                            print(f"    Cached {len(applications)} validated applications")
+                        except Exception as cache_error:
+                            print(f"    Warning: Failed to cache results: {cache_error}")
+                        
+                        return applications
+                
+                # If no applications found, log parser errors
+                if parser_errors:
+                    print(f"    All parsers failed:")
+                    for error in parser_errors:
+                        print(f"      - {error}")
+                
+                print(f"    No vehicle applications found on attempt {retry_count + 1}")
+                break  # Don't retry if parsing succeeded but found no applications
+                
+            except requests.exceptions.Timeout:
+                retry_count += 1
+                print(f"    Timeout on attempt {retry_count}. Retrying in {retry_count * 2} seconds...")
+                if retry_count < max_retries:
+                    time.sleep(retry_count * 2)  # Exponential backoff
+                    
+            except requests.exceptions.ConnectionError as e:
+                retry_count += 1
+                print(f"    Connection error on attempt {retry_count}: {e}")
+                if retry_count < max_retries:
+                    time.sleep(retry_count * 2)
+                    
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code in [429, 503, 502, 504]:  # Retryable errors
+                    retry_count += 1
+                    print(f"    HTTP {e.response.status_code} on attempt {retry_count}. Retrying...")
+                    if retry_count < max_retries:
+                        time.sleep(retry_count * 5)  # Longer wait for server errors
+                else:
+                    print(f"    Non-retryable HTTP error: {e}")
+                    break
+                    
+            except Exception as e:
+                print(f"    Unexpected error on attempt {retry_count + 1}: {e}")
+                retry_count += 1
+                if retry_count < max_retries:
+                    time.sleep(retry_count)
+        
+        # Cache negative results to avoid repeated failures
+        if not applications:
+            try:
                 self.cache[cache_key] = {
                     'timestamp': time.time(),
-                    'applications': [app.to_dict() for app in applications]
+                    'applications': [],
+                    'url': url,
+                    'part_number': part_number,
+                    'brand': brand,
+                    'status': 'no_applications_found'
                 }
                 self._save_cache()
-                print(f"    Extracted {len(applications)} vehicle applications")
-            else:
-                print(f"    No vehicle applications found")
-                
-        except Exception as e:
-            print(f"    Error extracting applications from {url}: {e}")
+            except Exception:
+                pass  # Don't fail if we can't cache negative results
         
         return applications
     
+    def _validate_application(self, app: VehicleApplication) -> bool:
+        """Validate a vehicle application for basic data quality"""
+        try:
+            # Must have year and make at minimum
+            if not app.year_start or not app.make:
+                return False
+            
+            # Year validation
+            if app.year_start < 1900 or app.year_start > 2030:
+                return False
+                
+            if app.year_end and (app.year_end < app.year_start or app.year_end > 2030):
+                return False
+            
+            # Make validation - must be alphabetic
+            if not app.make.replace(' ', '').replace('-', '').isalpha():
+                return False
+            
+            # Model validation if present
+            if app.model and len(app.model.strip()) < 1:
+                return False
+            
+            return True
+            
+        except Exception:
+            return False
+    
     def find_and_extract_applications(self, product_info: Dict[str, str], 
                                      image_agent=None) -> List[VehicleApplication]:
-        """Find official product pages and extract vehicle applications"""
+        """Find official product pages and extract vehicle applications with enhanced error handling"""
         
-        part_number = product_info.get(PART_NUMBER_COLUMN_SOURCE, '')
-        brand = product_info.get(BRAND_COLUMN_SOURCE, '')
+        # Input validation
+        if not product_info or not isinstance(product_info, dict):
+            print(f"    Error: Invalid product_info parameter")
+            return []
+        
+        part_number = product_info.get(PART_NUMBER_COLUMN_SOURCE, '').strip()
+        brand = product_info.get(BRAND_COLUMN_SOURCE, '').strip()
         
         if not part_number or not brand:
-            print(f"    Missing part number or brand for vehicle application extraction")
+            print(f"    Missing required data: part_number='{part_number}', brand='{brand}'")
+            return []
+        
+        # Sanitize part number for URL construction
+        safe_part_number = re.sub(r'[^a-zA-Z0-9\-_]', '', part_number.replace(' ', '-'))
+        if not safe_part_number:
+            print(f"    Error: Part number '{part_number}' cannot be sanitized for URL construction")
             return []
         
         print(f"  VEHICLE APP AGENT: Extracting applications for {brand} {part_number}")
         
-        # If we have an image agent, use its official site detection
-        if image_agent and hasattr(image_agent, 'brand_registry'):
-            brand_upper = brand.upper().strip()
-            if brand_upper in image_agent.brand_registry:
-                brand_info = image_agent.brand_registry[brand_upper]
-                
-                # Try official domains first
-                for domain in brand_info['domains']:
-                    # Construct likely product page URLs
-                    test_urls = [
-                        f"https://{domain}/product/{part_number.lower()}",
-                        f"https://{domain}/products/{part_number.lower()}",
-                        f"https://{domain}/parts/{part_number.lower()}",
-                        f"https://www.{domain}/product/{part_number.lower()}",
-                        f"https://www.{domain}/products/{part_number.lower()}"
-                    ]
+        try:
+            # Strategy 1: Use image agent's brand registry for official sites
+            if image_agent and hasattr(image_agent, 'brand_registry'):
+                brand_upper = brand.upper().strip()
+                if brand_upper in image_agent.brand_registry:
+                    brand_info = image_agent.brand_registry[brand_upper]
                     
-                    for test_url in test_urls:
-                        try:
-                            resp = self.session.head(test_url, timeout=10)
-                            if resp.status_code == 200:
-                                print(f"    Found product page: {test_url}")
-                                applications = self.extract_applications_from_url(test_url, part_number, brand)
-                                if applications:
-                                    return applications
-                        except:
-                            continue
+                    print(f"    Found {brand_upper} in brand registry with {len(brand_info['domains'])} official domains")
+                    
+                    # Try official domains with multiple URL patterns
+                    for domain in brand_info['domains']:
+                        url_patterns = [
+                            f"https://{domain}/product/{safe_part_number.lower()}",
+                            f"https://{domain}/products/{safe_part_number.lower()}",
+                            f"https://{domain}/parts/{safe_part_number.lower()}",
+                            f"https://{domain}/catalog/{safe_part_number.lower()}",
+                            f"https://www.{domain}/product/{safe_part_number.lower()}",
+                            f"https://www.{domain}/products/{safe_part_number.lower()}",
+                            f"https://www.{domain}/parts/{safe_part_number.lower()}"
+                        ]
+                        
+                        for test_url in url_patterns:
+                            try:
+                                # Quick HEAD request to check if page exists
+                                resp = self.session.head(test_url, timeout=10, allow_redirects=True)
+                                if resp.status_code == 200:
+                                    print(f"    Found potential product page: {test_url}")
+                                    applications = self.extract_applications_from_url(test_url, part_number, brand)
+                                    if applications:
+                                        print(f"    SUCCESS: Found {len(applications)} applications from official site")
+                                        return applications
+                                    else:
+                                        print(f"    Page found but no applications extracted")
+                                        
+                            except requests.exceptions.Timeout:
+                                print(f"    Timeout checking: {test_url}")
+                                continue
+                            except requests.exceptions.ConnectionError:
+                                print(f"    Connection error for: {test_url}")
+                                continue
+                            except Exception as e:
+                                print(f"    Error checking {test_url}: {e}")
+                                continue
+                    
+                    print(f"    No working product pages found for {part_number} on official {brand} domains")
+                else:
+                    print(f"    Brand '{brand_upper}' not found in brand registry")
+            else:
+                print(f"    No image agent or brand registry available")
+            
+            # Strategy 2: Fallback search using brand-specific search engines
+            print(f"    Trying fallback search strategies for {brand} {part_number}")
+            fallback_applications = self._try_fallback_search(brand, part_number)
+            if fallback_applications:
+                print(f"    SUCCESS: Found {len(fallback_applications)} applications from fallback search")
+                return fallback_applications
+            
+        except Exception as e:
+            print(f"    Unexpected error in vehicle application extraction: {e}")
+            import traceback
+            print(f"    Traceback: {traceback.format_exc()}")
         
-        print(f"    No official product pages found for {part_number}")
+        print(f"    No vehicle applications found for {brand} {part_number}")
         return []
+    
+    def _try_fallback_search(self, brand: str, part_number: str) -> List[VehicleApplication]:
+        """Fallback search strategy when official sites don't work"""
+        applications = []
+        
+        try:
+            # Try common automotive parts website patterns
+            fallback_domains = []
+            
+            brand_lower = brand.lower().replace(' ', '')
+            common_patterns = [
+                f"{brand_lower}.com",
+                f"{brand_lower}parts.com",
+                f"parts.{brand_lower}.com",
+                f"{brand_lower}aftermarket.com"
+            ]
+            
+            for pattern in common_patterns:
+                try:
+                    # Quick DNS lookup to see if domain exists (with timeout)
+                    import socket
+                    socket.setdefaulttimeout(2)  # 2 second timeout
+                    socket.gethostbyname(pattern)
+                    fallback_domains.append(pattern)
+                except (socket.gaierror, socket.timeout):
+                    continue
+            
+            if fallback_domains:
+                print(f"    Found {len(fallback_domains)} potential fallback domains")
+                
+                # Try each fallback domain
+                for domain in fallback_domains[:3]:  # Limit to 3 to avoid too many requests
+                    safe_part = re.sub(r'[^a-zA-Z0-9\-_]', '', part_number.replace(' ', '-'))
+                    test_url = f"https://{domain}/product/{safe_part.lower()}"
+                    
+                    try:
+                        applications = self.extract_applications_from_url(test_url, part_number, brand)
+                        if applications:
+                            return applications
+                    except Exception:
+                        continue
+            
+        except Exception as e:
+            print(f"    Error in fallback search: {e}")
+        
+        return applications
